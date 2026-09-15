@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jobqueue_postgres
+    environment:
+      POSTGRES_USER: jobqueue
+      POSTGRES_PASSWORD: jobqueue_secret
+      POSTGRES_DB: jobqueue
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Tune postgres for low-latency dev. We'll revisit these knobs in Phase 9.
+    command: >
+      postgres
+        -c log_min_duration_statement=100
+        -c log_statement=ddl
+        -c max_connections=100
+
+volumes:
+  pgdata:
