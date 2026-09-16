@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds all runtime configuration for both the API server and workers.
@@ -31,6 +33,11 @@ type Config struct {
 // It fails fast: if a required variable is missing, we exit immediately.
 // Silent misconfiguration is harder to debug than a loud startup failure.
 func Load() (*Config, error) {
+	// Load .env file if present. In production this file won't exist and
+	// godotenv.Load silently returns nil — env vars come from the platform.
+	// In local dev it populates the process environment from the file,
+	// so plain `go run ./cmd/api/` works without manually sourcing anything.
+	_ = godotenv.Load()
 	cfg := &Config{
 		DatabaseURL:             requireEnv("DATABASE_URL"),
 		APIPort:                 getEnvOrDefault("API_PORT", "8080"),
