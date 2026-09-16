@@ -93,7 +93,7 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 	duration := time.Since(start)
 
 	if err != nil {
-		slog.Error("job failed", "job_id", job.JobID, "task", job.TaskName, "error", err, "duration", duration)
+		slog.Error("job failed", "job_id", job.JobID, "task", job.TaskName, "error", err, "duration", duration.String())
 		if failErr := w.queue.Fail(ctx, job.JobID.String(), err); failErr != nil {
 			slog.Error("failed to mark job as failed", "job_id", job.JobID, "error", failErr)
 		}
@@ -105,7 +105,7 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 		return
 	}
 
-	slog.Info("job completed", "job_id", job.JobID, "task", job.TaskName, "duration", duration)
+	slog.Info("job completed", "job_id", job.JobID, "task", job.TaskName, "duration", duration.String())
 }
 
 // dispatch routes a job to its handler based on task_name.
