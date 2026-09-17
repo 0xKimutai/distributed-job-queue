@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"fmt"
+	"sync"
 
 	"github.com/distributed-job-queue/config"
 	"github.com/distributed-job-queue/internal/db"
@@ -33,7 +35,6 @@ func main() {
 	defer pool.Close()
 
 	q := queue.New(pool)
-	w := worker.New(cfg.WorkerID, q, cfg)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	// Cancelling ctx causes worker.Run() to exit cleanly after its current job.
@@ -45,7 +46,17 @@ func main() {
 		cancel()
 	}()
 
-	// Blocks until ctx is cancelled.
-	w.Run(ctx)
+	var wg sync.WaitGroup
+	for i := 0; i < cfg.WorkerConcurrency; i++ {
+		workerID := fmt.Sprintf("%s-%d", cfg.WorkerID, i)
+		w := worker.New(workerID, q, cfg)
+		wg.Add(1)
+		go func(w *worker.Worker) {
+			defer wg.Done()
+			w.Run(ctx)
+		}(w)
+	}
+	wg.Wait()
+
 	slog.Info("worker stopped cleanly")
 }

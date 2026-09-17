@@ -20,9 +20,10 @@ type Config struct {
 	APIPort string
 
 	// Worker
-	WorkerID          string        // unique identifier for this worker instance
-	WorkerPollInterval time.Duration // how often a worker polls for new jobs
-	WorkerLeaseDuration time.Duration // how long a claimed job lease lasts
+	WorkerID                string        // unique identifier for this worker instance
+	WorkerConcurrency       int           // number of concurrent worker goroutines
+	WorkerPollInterval      time.Duration // how often a worker polls for new jobs
+	WorkerLeaseDuration     time.Duration // how long a claimed job lease lasts
 	WorkerHeartbeatInterval time.Duration // how often the worker renews its lease
 
 	// Migrations
@@ -42,6 +43,7 @@ func Load() (*Config, error) {
 		DatabaseURL:             requireEnv("DATABASE_URL"),
 		APIPort:                 getEnvOrDefault("API_PORT", "8080"),
 		WorkerID:                getEnvOrDefault("WORKER_ID", generateWorkerID()),
+		WorkerConcurrency:       getIntOrDefault("WORKER_CONCURRENCY", 3),
 		WorkerPollInterval:      getDurationOrDefault("WORKER_POLL_INTERVAL", 2*time.Second),
 		WorkerLeaseDuration:     getDurationOrDefault("WORKER_LEASE_DURATION", 30*time.Second),
 		WorkerHeartbeatInterval: getDurationOrDefault("WORKER_HEARTBEAT_INTERVAL", 10*time.Second),
@@ -74,6 +76,18 @@ func getEnvOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func getIntOrDefault(key string, defaultVal int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		panic(fmt.Sprintf("environment variable %q has invalid integer value %q", key, v))
+	}
+	return n
 }
 
 func getDurationOrDefault(key string, defaultVal time.Duration) time.Duration {
