@@ -27,7 +27,9 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	// With max_connections=100 on Postgres and potentially multiple
 	// processes (API + N workers), you must budget carefully.
 	// Rule of thumb: (max_pg_connections - 3 superuser slots) / num_processes
-	cfg.MaxConns = 10
+	cfg.MaxConns = 10 // restored after Phase 9 exhaustion experiment
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
 
 	// How long a connection can sit idle before being closed.
 	// Keeps the pool from holding connections that Postgres has already
