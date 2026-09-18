@@ -56,7 +56,7 @@ func (q *Queue) Claim(ctx context.Context, workerID string, leaseDuration time.D
 			FROM   jobs
 			WHERE  status = 'pending'
 			  AND  run_at <= now()
-			ORDER  BY priority DESC, created_at ASC
+			ORDER  BY (priority + EXTRACT(EPOCH FROM (now() - created_at)) / 60.0) DESC
 			FOR UPDATE SKIP LOCKED
 			LIMIT  1
 		)
