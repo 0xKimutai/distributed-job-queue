@@ -92,29 +92,31 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 
 	err := w.dispatch(ctx, job)
 	duration := time.Since(start)
+	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	if err != nil {
 		if backoff.IsPermanent(err) {
 			slog.Error("permanent failure, not retrying", "job_id", job.JobID, "error", err, "duration", duration.String())
-			if failErr := w.queue.Fail(ctx, job.JobID.String(), err); failErr != nil {
+			if failErr := w.queue.Fail(dbCtx, job.JobID.String(), err); failErr != nil {
 				slog.Error("failed to mark job as permanently failed", "job_id", job.JobID, "error", failErr)
 			}
 		} else if job.RetryCount >= job.MaxRetries {
 			slog.Error("max retries exceeded, sending to dead letter", "job_id", job.JobID, "retry_count", job.RetryCount, "error", err)
-			if failErr := w.queue.Fail(ctx, job.JobID.String(), err); failErr != nil {
+			if failErr := w.queue.Fail(dbCtx, job.JobID.String(), err); failErr != nil {
 				slog.Error("failed to mark job as failed", "job_id", job.JobID, "error", failErr)
 			}
 		} else {
 			delay := backoff.Calculate(job.RetryCount, backoff.DefaultBase, backoff.DefaultMaxDelay)
 			slog.Warn("transient failure, retrying", "job_id", job.JobID, "retry_count", job.RetryCount, "delay", delay.String(), "error", err)
-			if retryErr := w.queue.Retry(ctx, job.JobID.String(), err, delay); retryErr != nil {
+			if retryErr := w.queue.Retry(dbCtx, job.JobID.String(), err, delay); retryErr != nil {
 				slog.Error("failed to schedule retry", "job_id", job.JobID, "error", retryErr)
 			}
 		}
 		return
 	}
 
-	if completeErr := w.queue.Complete(ctx, job.JobID.String()); completeErr != nil {
+	if completeErr := w.queue.Complete(dbCtx, job.JobID.String()); completeErr != nil {
 		slog.Error("failed to mark job as complete", "job_id", job.JobID, "error", completeErr)
 		return
 	}
@@ -140,7 +142,9 @@ func (w *Worker) runHeartbeat(ctx context.Context, jobID string) {
 			// Job finished — stop heartbeating.
 			return
 		case <-ticker.C:
-			err := w.queue.RenewLease(ctx, jobID, w.id, w.cfg.WorkerLeaseDuration)
+			renewCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := w.queue.RenewLease(renewCtx, jobID, w.id, w.cfg.WorkerLeaseDuration)
+			cancel()
 			if err != nil {
 				// Log but don't crash — a missed heartbeat isn't fatal immediately.
 				// The lease gives us several more intervals before expiry.
