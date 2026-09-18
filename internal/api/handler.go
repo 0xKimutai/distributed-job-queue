@@ -1,28 +1,47 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/distributed-job-queue/config"
+	"github.com/distributed-job-queue/internal/queue"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// handler holds shared dependencies for all HTTP handlers.
-// This is the standard Go pattern: dependencies injected at construction,
-// methods hang off the struct. No global state.
 type handler struct {
-	pool *pgxpool.Pool
-	cfg  *config.Config
+	pool  *pgxpool.Pool
+	queue *queue.Queue
+	cfg   *config.Config
 }
 
-// handleHealth is a simple liveness probe.
-// Load balancers and container orchestrators call this to check if the
-// process is alive. We'll extend it to also check DB connectivity in Phase 8.
-func (h *handler) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+// handleLive is a liveness probe — just confirms the process is running.
+// No DB check. Kubernetes uses this to decide whether to restart the pod.
+func (h *handler) handleLive(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReady is a readiness probe — confirms the process can serve traffic.
+// Checks DB connectivity. Load balancers use this to route traffic.
+// Returns 503 if the DB is unreachable so the LB stops sending requests here.
+func (h *handler) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := h.pool.Ping(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status":   "unavailable",
+			"database": "unreachable",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":   "ok",
+		"database": "ok",
+	})
 }
 
 // EnqueueRequest is the JSON body for POST /jobs.
@@ -51,24 +70,19 @@ type EnqueueResponse struct {
 // Use h.pool.QueryRow() for the INSERT ... RETURNING query.
 // Use r.Context() as the context — it carries the request deadline.
 func (h *handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
-	// Limit request body to 1MB to prevent memory exhaustion from large payloads.
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
-	// Decode the request body.
 	var req EnqueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Malformed JSON is a client mistake — 400, not 500.
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	// Validate required fields.
 	if req.TaskName == "" {
 		writeError(w, http.StatusBadRequest, "task_name is required")
 		return
 	}
 
-	// Apply defaults.
 	if req.QueueName == "" {
 		req.QueueName = "default"
 	}
@@ -76,29 +90,13 @@ func (h *handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		req.Payload = json.RawMessage("{}")
 	}
 
-	// INSERT and return the generated job_id.
-	const query = `
-		INSERT INTO jobs (task_name, queue_name, payload, priority)
-		VALUES ($1, $2, $3, $4)
-		RETURNING job_id
-	`
-
-	var jobID string
-	err := h.pool.QueryRow(
-		r.Context(),
-		query,
-		req.TaskName,
-		req.QueueName,
-		req.Payload,
-		req.Priority,
-	).Scan(&jobID)
+	// Use h.queue.Enqueue so the JobsEnqueued metric is recorded.
+	jobID, err := h.queue.Enqueue(r.Context(), req.TaskName, req.QueueName, req.Payload, req.Priority)
 	if err != nil {
-		// Never leak raw DB errors to clients.
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	// jobID is already a string — no conversion needed.
 	writeJSON(w, http.StatusCreated, EnqueueResponse{JobID: jobID})
 }
 

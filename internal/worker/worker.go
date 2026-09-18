@@ -9,6 +9,7 @@ import (
 
 	"github.com/distributed-job-queue/config"
 	"github.com/distributed-job-queue/internal/backoff"
+	"github.com/distributed-job-queue/internal/metrics"
 	"github.com/distributed-job-queue/internal/models"
 	"github.com/distributed-job-queue/internal/queue"
 	"github.com/jackc/pgx/v5"
@@ -80,35 +81,38 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 	start := time.Now()
 	slog.Info("executing job", "job_id", job.JobID, "task", job.TaskName)
 
-	// Start a heartbeat goroutine that renews the lease while this job runs.
-	// It runs concurrently with the job execution and stops when the job finishes.
-	//
-	// We use a separate cancelable context so we can stop the heartbeat
-	// the moment the job completes — not just when the whole worker shuts down.
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
-	defer stopHeartbeat() // always stop heartbeat when executeJob returns
-
+	defer stopHeartbeat()
 	go w.runHeartbeat(heartbeatCtx, job.JobID.String())
 
 	err := w.dispatch(ctx, job)
 	duration := time.Since(start)
+
+	// Use a fresh context for DB writes — ctx may be cancelled (graceful shutdown)
+	// but we still need to persist job state before exiting.
 	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err != nil {
 		if backoff.IsPermanent(err) {
 			slog.Error("permanent failure, not retrying", "job_id", job.JobID, "error", err, "duration", duration.String())
+			metrics.JobsFailed.WithLabelValues(job.QueueName, job.TaskName).Inc()
+			metrics.JobExecutionDuration.WithLabelValues(job.QueueName, job.TaskName, "failed").Observe(duration.Seconds())
 			if failErr := w.queue.Fail(dbCtx, job.JobID.String(), err); failErr != nil {
 				slog.Error("failed to mark job as permanently failed", "job_id", job.JobID, "error", failErr)
 			}
 		} else if job.RetryCount >= job.MaxRetries {
 			slog.Error("max retries exceeded, sending to dead letter", "job_id", job.JobID, "retry_count", job.RetryCount, "error", err)
+			metrics.JobsFailed.WithLabelValues(job.QueueName, job.TaskName).Inc()
+			metrics.JobExecutionDuration.WithLabelValues(job.QueueName, job.TaskName, "failed").Observe(duration.Seconds())
 			if failErr := w.queue.Fail(dbCtx, job.JobID.String(), err); failErr != nil {
 				slog.Error("failed to mark job as failed", "job_id", job.JobID, "error", failErr)
 			}
 		} else {
 			delay := backoff.Calculate(job.RetryCount, backoff.DefaultBase, backoff.DefaultMaxDelay)
 			slog.Warn("transient failure, retrying", "job_id", job.JobID, "retry_count", job.RetryCount, "delay", delay.String(), "error", err)
+			metrics.JobsRetried.WithLabelValues(job.QueueName, job.TaskName).Inc()
+			metrics.JobExecutionDuration.WithLabelValues(job.QueueName, job.TaskName, "retried").Observe(duration.Seconds())
 			if retryErr := w.queue.Retry(dbCtx, job.JobID.String(), err, delay); retryErr != nil {
 				slog.Error("failed to schedule retry", "job_id", job.JobID, "error", retryErr)
 			}
@@ -121,6 +125,8 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 		return
 	}
 
+	metrics.JobsCompleted.WithLabelValues(job.QueueName, job.TaskName).Inc()
+	metrics.JobExecutionDuration.WithLabelValues(job.QueueName, job.TaskName, "completed").Observe(duration.Seconds())
 	slog.Info("job completed", "job_id", job.JobID, "task", job.TaskName, "duration", duration.String())
 }
 
@@ -187,6 +193,7 @@ func (w *Worker) RunRecoverySweep(ctx context.Context) {
 			}
 			if recovered > 0 {
 				slog.Warn("recovered stale jobs", "count", recovered)
+				metrics.JobsRecovered.Add(float64(recovered))
 			}
 		}
 	}

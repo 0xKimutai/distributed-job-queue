@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/distributed-job-queue/internal/metrics"
 	"github.com/distributed-job-queue/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,6 +36,7 @@ func (q *Queue) Enqueue(ctx context.Context, taskName, queueName string, payload
 	if err != nil {
 		return "", fmt.Errorf("enqueue: %w", err)
 	}
+	metrics.JobsEnqueued.WithLabelValues(queueName, taskName).Inc()
 	return jobID, nil
 }
 
@@ -45,6 +47,7 @@ func (q *Queue) Enqueue(ctx context.Context, taskName, queueName string, payload
 // The leaseDuration controls how long the worker has before another worker
 // may reclaim the job if no heartbeat is received.
 func (q *Queue) Claim(ctx context.Context, workerID string, leaseDuration time.Duration) (*models.Job, error) {
+	start := time.Now()
 	const sql = `
 		UPDATE jobs
 		SET
@@ -75,11 +78,12 @@ func (q *Queue) Claim(ctx context.Context, workerID string, leaseDuration time.D
 	job, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[models.Job])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, pgx.ErrNoRows // caller handles this as "nothing to do"
+			return nil, pgx.ErrNoRows
 		}
 		return nil, fmt.Errorf("claim scan: %w", err)
 	}
 
+	metrics.ClaimDuration.Observe(time.Since(start).Seconds())
 	return &job, nil
 }
 
