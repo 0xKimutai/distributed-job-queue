@@ -97,7 +97,32 @@ func (q *Queue) Complete(ctx context.Context, jobID string) error {
 	return nil
 }
 
-// Fail marks a job as failed and records the error message.
+// Retry resets a job back to pending with a future run_at (backoff delay)
+// and increments the retry count. This is called when a job fails transiently
+// and has not yet exceeded max_retries.
+//
+// The job becomes invisible to workers until run_at passes — this is how
+// exponential backoff is enforced without any scheduler or timer process.
+// The existing claim query already filters on run_at <= now().
+func (q *Queue) Retry(ctx context.Context, jobID string, jobErr error, delay time.Duration) error {
+	const sql = `
+		UPDATE jobs
+		SET
+			status           = 'pending',
+			worker_id        = NULL,
+			lease_expires_at = NULL,
+			retry_count      = retry_count + 1,
+			last_error       = $2,
+			run_at           = now() + $3::interval
+		WHERE job_id = $1
+	`
+	errMsg := jobErr.Error()
+	_, err := q.pool.Exec(ctx, sql, jobID, errMsg, delay.String())
+	if err != nil {
+		return fmt.Errorf("retry job %s: %w", jobID, err)
+	}
+	return nil
+}
 // In Phase 4 we'll add retry logic here — for now it goes straight to failed.
 func (q *Queue) Fail(ctx context.Context, jobID string, jobErr error) error {
 	const sql = `

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/distributed-job-queue/config"
+	"github.com/distributed-job-queue/internal/backoff"
 	"github.com/distributed-job-queue/internal/models"
 	"github.com/distributed-job-queue/internal/queue"
 	"github.com/jackc/pgx/v5"
@@ -75,16 +76,6 @@ func (w *Worker) pollOnce(ctx context.Context) {
 	w.executeJob(ctx, job)
 }
 
-// executeJob runs the job and marks it complete or failed.
-//
-// YOUR TASK: implement this function.
-//
-// It should:
-//  1. Log "executing job" with job_id and task_name
-//  2. Call w.dispatch(ctx, job) to run the actual handler
-//  3. If dispatch returns an error: call w.queue.Fail() and log the failure
-//  4. If dispatch succeeds: call w.queue.Complete() and log success
-//  5. Log how long execution took (use time.Since)
 func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 	start := time.Now()
 	slog.Info("executing job", "job_id", job.JobID, "task", job.TaskName)
@@ -93,9 +84,22 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 	duration := time.Since(start)
 
 	if err != nil {
-		slog.Error("job failed", "job_id", job.JobID, "task", job.TaskName, "error", err, "duration", duration.String())
-		if failErr := w.queue.Fail(ctx, job.JobID.String(), err); failErr != nil {
-			slog.Error("failed to mark job as failed", "job_id", job.JobID, "error", failErr)
+		if backoff.IsPermanent(err) {
+			slog.Error("permanent failure, not retrying", "job_id", job.JobID, "error", err, "duration", duration.String())
+			if failErr := w.queue.Fail(ctx, job.JobID.String(), err); failErr != nil {
+				slog.Error("failed to mark job as permanently failed", "job_id", job.JobID, "error", failErr)
+			}
+		} else if job.RetryCount >= job.MaxRetries {
+			slog.Error("max retries exceeded, sending to dead letter", "job_id", job.JobID, "retry_count", job.RetryCount, "error", err)
+			if failErr := w.queue.Fail(ctx, job.JobID.String(), err); failErr != nil {
+				slog.Error("failed to mark job as failed", "job_id", job.JobID, "error", failErr)
+			}
+		} else {
+			delay := backoff.Calculate(job.RetryCount, backoff.DefaultBase, backoff.DefaultMaxDelay)
+			slog.Warn("transient failure, retrying", "job_id", job.JobID, "retry_count", job.RetryCount, "delay", delay.String(), "error", err)
+			if retryErr := w.queue.Retry(ctx, job.JobID.String(), err, delay); retryErr != nil {
+				slog.Error("failed to schedule retry", "job_id", job.JobID, "error", retryErr)
+			}
 		}
 		return
 	}
@@ -114,14 +118,22 @@ func (w *Worker) dispatch(ctx context.Context, job *models.Job) error {
 	switch job.TaskName {
 	case "send_email":
 		return handleSendEmail(ctx, job)
+	case "flaky_task":
+		return handleFlakyTask(ctx, job)
 	default:
-		// Unknown task — this is a permanent failure, not a transient one.
-		// We'll distinguish permanent vs transient failures in Phase 4.
-		return fmt.Errorf("unknown task: %s", job.TaskName)
+		return backoff.Permanent(fmt.Errorf("unknown task: %s", job.TaskName))
 	}
 }
 
-// handleSendEmail is a fake job handler that simulates work.
+// handleFlakyTask simulates a transient failure — succeeds only on the 3rd attempt.
+// This lets us observe the retry + backoff path end-to-end.
+func handleFlakyTask(ctx context.Context, job *models.Job) error {
+	if job.RetryCount < 2 {
+		return fmt.Errorf("simulated transient error (attempt %d)", job.RetryCount+1)
+	}
+	slog.Info("flaky task succeeded after retries", "job_id", job.JobID, "retry_count", job.RetryCount)
+	return nil
+}
 // Real handlers will do actual work: call APIs, write to DBs, send emails, etc.
 func handleSendEmail(ctx context.Context, job *models.Job) error {
 	slog.Info("sending email", "job_id", job.JobID, "payload", string(job.Payload))
