@@ -123,7 +123,8 @@ func (q *Queue) Retry(ctx context.Context, jobID string, jobErr error, delay tim
 	}
 	return nil
 }
-// In Phase 4 we'll add retry logic here — for now it goes straight to failed.
+// Fail marks a job as permanently failed and records the error message.
+// Called when max_retries is exceeded or the error is permanent.
 func (q *Queue) Fail(ctx context.Context, jobID string, jobErr error) error {
 	const sql = `
 		UPDATE jobs
@@ -141,3 +142,41 @@ func (q *Queue) Fail(ctx context.Context, jobID string, jobErr error) error {
 	}
 	return nil
 }
+
+// RenewLease extends the lease expiry for a running job.
+// Only succeeds if the job is still owned by this worker and still running —
+// prevents a race where two workers both try to renew the same job.
+func (q *Queue) RenewLease(ctx context.Context, jobID string, workerID string, leaseDuration time.Duration) error {
+	const sql = `
+		UPDATE jobs
+		SET lease_expires_at = now() + $3::interval
+		WHERE job_id  = $1
+		  AND worker_id = $2
+		  AND status  = 'running'
+	`
+	_, err := q.pool.Exec(ctx, sql, jobID, workerID, leaseDuration.String())
+	if err != nil {
+		return fmt.Errorf("renew lease %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// RecoverStaleJobs resets all running jobs whose lease has expired back to pending.
+// Returns the number of jobs recovered so the caller can log it.
+// This is called periodically by a background goroutine inside the worker process.
+func (q *Queue) RecoverStaleJobs(ctx context.Context) (int64, error) {
+	const sql = `
+		UPDATE jobs
+		SET
+			status           = 'pending',
+			worker_id        = NULL,
+			lease_expires_at = NULL
+		WHERE status          = 'running'
+		  AND lease_expires_at < now()
+	`
+	tag, err := q.pool.Exec(ctx, sql)
+	if err != nil {
+		return 0, fmt.Errorf("recover stale jobs: %w", err)
+	}
+	return tag.RowsAffected(), nil
+} 

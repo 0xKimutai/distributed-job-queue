@@ -47,6 +47,17 @@ func main() {
 	}()
 
 	var wg sync.WaitGroup
+
+	// One dedicated recovery sweep goroutine — resets orphaned jobs whose
+	// lease expired (i.e. the worker that claimed them crashed or stalled).
+	sweeper := worker.New(fmt.Sprintf("%s-sweeper", cfg.WorkerID), q, cfg)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sweeper.RunRecoverySweep(ctx)
+	}()
+
+	// N poll-loop worker goroutines — each independently claims and executes jobs.
 	for i := 0; i < cfg.WorkerConcurrency; i++ {
 		workerID := fmt.Sprintf("%s-%d", cfg.WorkerID, i)
 		w := worker.New(workerID, q, cfg)
@@ -57,6 +68,8 @@ func main() {
 		}(w)
 	}
 	wg.Wait()
+	wg.Wait()
+
 
 	slog.Info("worker stopped cleanly")
 }

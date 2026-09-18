@@ -80,6 +80,16 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 	start := time.Now()
 	slog.Info("executing job", "job_id", job.JobID, "task", job.TaskName)
 
+	// Start a heartbeat goroutine that renews the lease while this job runs.
+	// It runs concurrently with the job execution and stops when the job finishes.
+	//
+	// We use a separate cancelable context so we can stop the heartbeat
+	// the moment the job completes — not just when the whole worker shuts down.
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat() // always stop heartbeat when executeJob returns
+
+	go w.runHeartbeat(heartbeatCtx, job.JobID.String())
+
 	err := w.dispatch(ctx, job)
 	duration := time.Since(start)
 
@@ -112,7 +122,71 @@ func (w *Worker) executeJob(ctx context.Context, job *models.Job) {
 	slog.Info("job completed", "job_id", job.JobID, "task", job.TaskName, "duration", duration.String())
 }
 
-// dispatch routes a job to its handler based on task_name.
+// runHeartbeat periodically renews the lease for a running job.
+// It runs in its own goroutine and exits when ctx is cancelled
+// (which happens when executeJob returns via defer stopHeartbeat()).
+//
+// The heartbeat interval must be well under the lease duration — we use
+// the configured WorkerHeartbeatInterval (default: 10s with a 30s lease).
+// That gives 3 heartbeat chances before expiry, making false-positive
+// expiries from brief scheduler pauses extremely unlikely.
+func (w *Worker) runHeartbeat(ctx context.Context, jobID string) {
+	ticker := time.NewTicker(w.cfg.WorkerHeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Job finished — stop heartbeating.
+			return
+		case <-ticker.C:
+			err := w.queue.RenewLease(ctx, jobID, w.id, w.cfg.WorkerLeaseDuration)
+			if err != nil {
+				// Log but don't crash — a missed heartbeat isn't fatal immediately.
+				// The lease gives us several more intervals before expiry.
+				slog.Warn("failed to renew lease", "job_id", jobID, "worker_id", w.id, "error", err)
+			} else {
+				slog.Debug("lease renewed", "job_id", jobID, "worker_id", w.id)
+			}
+		}
+	}
+}
+
+// RunRecoverySweep periodically scans for jobs whose lease has expired and
+// resets them to pending so another worker can claim them.
+//
+// This is the mechanism that recovers jobs orphaned by crashed workers.
+// It runs as a separate goroutine in the worker process — not in the API server
+// (which should be stateless) and not as a separate binary (which adds
+// operational complexity and a new failure mode).
+//
+// Called from cmd/worker/main.go alongside the poll-loop goroutines.
+func (w *Worker) RunRecoverySweep(ctx context.Context) {
+	// Sweep interval is shorter than lease duration so we catch expired
+	// leases promptly. Worst-case recovery = lease_duration + sweep_interval.
+	sweepInterval := w.cfg.WorkerLeaseDuration / 2
+	ticker := time.NewTicker(sweepInterval)
+	defer ticker.Stop()
+
+	slog.Info("recovery sweep started", "interval", sweepInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("recovery sweep stopped")
+			return
+		case <-ticker.C:
+			recovered, err := w.queue.RecoverStaleJobs(ctx)
+			if err != nil {
+				slog.Error("recovery sweep failed", "error", err)
+				continue
+			}
+			if recovered > 0 {
+				slog.Warn("recovered stale jobs", "count", recovered)
+			}
+		}
+	}
+}
 // For now we only have one fake handler. In Phase 3+ we'll register real handlers.
 func (w *Worker) dispatch(ctx context.Context, job *models.Job) error {
 	switch job.TaskName {
@@ -120,6 +194,8 @@ func (w *Worker) dispatch(ctx context.Context, job *models.Job) error {
 		return handleSendEmail(ctx, job)
 	case "flaky_task":
 		return handleFlakyTask(ctx, job)
+	case "slow_task":
+		return handleSlowTask(ctx, job)
 	default:
 		return backoff.Permanent(fmt.Errorf("unknown task: %s", job.TaskName))
 	}
@@ -134,6 +210,20 @@ func handleFlakyTask(ctx context.Context, job *models.Job) error {
 	slog.Info("flaky task succeeded after retries", "job_id", job.JobID, "retry_count", job.RetryCount)
 	return nil
 }
+// handleSlowTask simulates a long-running job (60s) so we can kill the worker
+// mid-execution and observe lease expiry + recovery sweep in action.
+func handleSlowTask(ctx context.Context, job *models.Job) error {
+	slog.Info("slow task started, will run for 60s", "job_id", job.JobID)
+	select {
+	case <-time.After(60 * time.Second):
+		slog.Info("slow task completed", "job_id", job.JobID)
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("slow task cancelled: %w", ctx.Err())
+	}
+}
+
+// handleSendEmail is a fake job handler that simulates work.
 // Real handlers will do actual work: call APIs, write to DBs, send emails, etc.
 func handleSendEmail(ctx context.Context, job *models.Job) error {
 	slog.Info("sending email", "job_id", job.JobID, "payload", string(job.Payload))
