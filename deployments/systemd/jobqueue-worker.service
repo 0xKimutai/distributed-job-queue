@@ -1,0 +1,40 @@
+[Unit]
+Description=Job Queue Worker
+Documentation=https://github.com/distributed-job-queue
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=jobqueue
+Group=jobqueue
+
+ExecStart=/usr/local/bin/jobqueue-worker
+
+EnvironmentFile=/etc/jobqueue/env
+
+Restart=on-failure
+RestartSec=5s
+
+# Worker timeout must account for:
+# - Longest possible job execution: slow_task = 60s
+# - dbCtx cleanup budget: 10s
+# - Heartbeat / sweep shutdown: <1s
+# Total: ~71s. We use 90s to be safe.
+# If systemd kills the worker before cleanup, jobs are orphaned until
+# the recovery sweep on the next worker instance picks them up.
+TimeoutStopSec=90s
+
+LimitNOFILE=65536
+LimitNPROC=512
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jobqueue-worker
+
+[Install]
+WantedBy=multi-user.target

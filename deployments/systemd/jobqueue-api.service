@@ -1,0 +1,51 @@
+[Unit]
+Description=Job Queue API Server
+Documentation=https://github.com/distributed-job-queue
+# Don't start until the network and PostgreSQL are available.
+# If running Postgres on another host, replace with network-online.target.
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=jobqueue
+Group=jobqueue
+
+# The compiled binary — never use `go run` in production.
+# Build with: go build -o /usr/local/bin/jobqueue-api ./cmd/api/
+ExecStart=/usr/local/bin/jobqueue-api
+
+# Load environment variables from this file.
+# Format: KEY=VALUE, one per line, no `export`, no quotes needed.
+# Protect this file: chmod 600 /etc/jobqueue/env
+EnvironmentFile=/etc/jobqueue/env
+
+# Restart policy: restart on non-zero exit (crash, OOM kill, etc.)
+# but not on clean exit (systemctl stop) or SIGTERM.
+Restart=on-failure
+RestartSec=5s
+
+# Give the process 30 seconds to handle SIGTERM gracefully before SIGKILL.
+# Our cleanup (dbCtx) takes at most 10s — 30s is comfortable headroom.
+TimeoutStopSec=30s
+
+# Resource limits — prevents a runaway process from exhausting the system.
+# Adjust based on your machine's capacity.
+LimitNOFILE=65536        # max open file descriptors (each DB conn = 1 fd)
+LimitNPROC=512           # max threads
+
+# Security hardening — reduces blast radius if the process is compromised.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/jobqueue
+
+# Logging — sends stdout/stderr to the systemd journal.
+# Read with: journalctl -u jobqueue-api -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jobqueue-api
+
+[Install]
+# Start during normal multi-user boot (networking up, no GUI required).
+WantedBy=multi-user.target

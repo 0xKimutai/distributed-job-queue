@@ -1,0 +1,8 @@
+.env
+.env.example
+.git
+.gitignore
+bin/
+docs/
+scripts/
+*.md

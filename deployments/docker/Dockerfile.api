@@ -1,0 +1,48 @@
+# Multi-stage build — compiler in stage 1, only binary in stage 2.
+# Final image has no Go toolchain, no source code, no build cache.
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /src
+
+# Copy dependency manifests first — Docker layer cache means we only
+# re-download modules when go.mod or go.sum changes, not on every code change.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build.
+# CGO_ENABLED=0 produces a fully static binary — no libc dependency.
+# This is what allows us to use a scratch or alpine base image.
+# -ldflags="-s -w" strips debug symbols (~30% smaller binary).
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
+    -o /bin/jobqueue-api \
+    ./cmd/api/
+
+# ── Stage 2: Run ──────────────────────────────────────────────────────────────
+FROM alpine:3.19
+
+# Install CA certificates — needed for HTTPS calls to external services.
+# Also install tzdata for correct timezone handling in timestamps.
+RUN apk --no-cache add ca-certificates tzdata
+
+# Run as non-root. Same principle as systemd User= directive.
+RUN adduser -D -s /bin/sh jobqueue
+USER jobqueue
+
+WORKDIR /app
+
+# Copy binary from builder stage.
+COPY --from=builder /bin/jobqueue-api ./jobqueue-api
+
+# Copy migrations — the API server runs them on startup.
+COPY --chown=jobqueue:jobqueue migrations/ ./migrations/
+
+EXPOSE 8080
+
+# Use exec form (array) not shell form (string).
+# Shell form runs as PID 2 under /bin/sh — SIGTERM goes to sh, not your binary.
+# Exec form runs as PID 1 — SIGTERM goes directly to your binary.
+ENTRYPOINT ["./jobqueue-api"]
