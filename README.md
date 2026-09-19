@@ -237,25 +237,3 @@ Without jitter, all workers that fail on the same external service at T+0 retry 
 `ctx` is cancelled on graceful shutdown — it signals "stop doing work." But after the job handler returns, we still need to write the job's final state to the database. Using a cancelled context for DB writes causes them to fail immediately, leaving the job orphaned in `running` status. `dbCtx` is a fresh `context.Background()` with a short timeout that lets cleanup writes succeed regardless of shutdown state.
 
 ---
-
-## Learning Journal
-
-See [`docs/learning-journal.md`](docs/learning-journal.md) for a running record of concepts learned, design decisions, and questions to answer at each phase of development.
-
----
-
-## Roadmap
-
-- [x] Phase 0 — Problem definition, schema, architecture
-- [x] Phase 1 — Repository, migrations, API server
-- [x] Phase 2 — First worker: poll loop, claim, execute
-- [x] Phase 3 — Concurrent workers, `FOR UPDATE SKIP LOCKED`
-- [x] Phase 4 — Retries, exponential backoff with jitter, dead letter
-- [x] Phase 5 — Leases, heartbeats, stale job recovery
-- [x] Phase 6 — Graceful shutdown, two-context pattern
-- [x] Phase 7 — Priority aging, starvation prevention
-- [x] Phase 8 — Observability: Prometheus metrics, health probes, pprof
-- [x] Phase 9 — Connection pooling, load testing, resource exhaustion
-- [ ] Phase 10 — systemd unit files, Docker, operational hardening
-- [ ] Phase 11 — C++ workers via gRPC
-- [ ] Phase 12 — Redis/Kafka comparison and migration
