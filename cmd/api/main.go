@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,11 +14,13 @@ import (
 	"github.com/distributed-job-queue/config"
 	"github.com/distributed-job-queue/internal/api"
 	"github.com/distributed-job-queue/internal/db"
+	pb "github.com/distributed-job-queue/internal/grpc/pb"
+	grpcserver "github.com/distributed-job-queue/internal/grpc/server"
+	"github.com/distributed-job-queue/internal/queue"
+	"google.golang.org/grpc"
 )
 
 func main() {
-	// Structured logging from the start. In Phase 8 we'll add log levels,
-	// trace IDs, and ship these to a collector. For now, JSON to stdout.
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	cfg, err := config.Load()
@@ -28,12 +31,11 @@ func main() {
 
 	ctx := context.Background()
 
-	// Run migrations before accepting any traffic.
-	// This is safe to do on every startup because migrate is idempotent.
 	if err := db.RunMigrations(ctx, cfg.DatabaseURL, cfg.MigrationsPath); err != nil {
 		slog.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
+
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -41,9 +43,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Build the HTTP server. All route registration lives in internal/api.
+	q := queue.New(pool)
+
+	// ── HTTP server ───────────────────────────────────────────────────────────
 	router := api.NewRouter(pool, cfg)
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.APIPort),
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
@@ -51,28 +55,48 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Graceful shutdown: listen for SIGINT / SIGTERM, give in-flight
-	// requests 15 seconds to complete before forcing close.
-	// We'll study this deeply in Phase 6. For now, just know it's here.
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
-		slog.Info("API server starting", "port", cfg.APIPort)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "error", err)
+		slog.Info("HTTP server starting", "port", cfg.APIPort)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP server error", "error", err)
 			os.Exit(1)
 		}
 	}()
 
+	// ── gRPC server ───────────────────────────────────────────────────────────
+	// Listens on a separate port from the HTTP API.
+	// C++ workers connect here; HTTP clients use the REST API.
+	grpcListener, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.GRPCPort))
+	if err != nil {
+		slog.Error("failed to listen on gRPC port", "port", cfg.GRPCPort, "error", err)
+		os.Exit(1)
+	}
+
+	grpcSrv := grpc.NewServer()
+	pb.RegisterJobQueueServiceServer(grpcSrv, grpcserver.New(q))
+
+	go func() {
+		slog.Info("gRPC server starting", "port", cfg.GRPCPort)
+		if err := grpcSrv.Serve(grpcListener); err != nil {
+			slog.Error("gRPC server error", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// ── Graceful shutdown ─────────────────────────────────────────────────────
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+
 	slog.Info("shutdown signal received, draining...")
+
+	// Stop gRPC gracefully — waits for in-flight RPCs to complete.
+	grpcSrv.GracefulStop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("forced shutdown", "error", err)
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("forced HTTP shutdown", "error", err)
 	}
 
 	slog.Info("server stopped cleanly")

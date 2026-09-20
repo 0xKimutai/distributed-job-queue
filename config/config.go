@@ -17,7 +17,8 @@ type Config struct {
 	DatabaseURL string
 
 	// API server
-	APIPort string
+	APIPort  string
+	GRPCPort string
 
 	// Worker
 	WorkerID                string        // unique identifier for this worker instance
@@ -42,6 +43,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		DatabaseURL:             requireEnv("DATABASE_URL"),
 		APIPort:                 getEnvOrDefault("API_PORT", "8080"),
+		GRPCPort:                getEnvOrDefault("GRPC_PORT", "50051"),
 		WorkerID:                getEnvOrDefault("WORKER_ID", generateWorkerID()),
 		WorkerConcurrency:       getIntOrDefault("WORKER_CONCURRENCY", 3),
 		WorkerPollInterval:      getDurationOrDefault("WORKER_POLL_INTERVAL", 2*time.Second),

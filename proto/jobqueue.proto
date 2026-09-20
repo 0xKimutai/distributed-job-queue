@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package jobqueue;
+
+// Go package path for generated code.
+option go_package = "github.com/distributed-job-queue/internal/grpc/pb";
+
+// ── Messages ──────────────────────────────────────────────────────────────────
+
+// ClaimJobRequest is sent by a worker to claim the next available job.
+message ClaimJobRequest {
+  string worker_id    = 1;  // unique ID of the requesting worker
+  string queue_name   = 2;  // which queue to pull from ("default" if empty)
+  int32  lease_seconds = 3; // requested lease duration in seconds
+}
+
+// ClaimJobResponse is returned when a job is successfully claimed.
+// If no jobs are available, the RPC returns a NOT_FOUND status code
+// rather than a populated response — workers check the gRPC status, not this message.
+message ClaimJobResponse {
+  string job_id      = 1;
+  string task_name   = 2;
+  bytes  payload     = 3;  // raw JSON bytes — worker parses based on task_name
+  int32  priority    = 4;
+  int32  retry_count = 5;
+  int32  max_retries = 6;
+}
+
+// CompleteJobRequest marks a job as successfully finished.
+message CompleteJobRequest {
+  string job_id    = 1;
+  string worker_id = 2;  // must match the worker that claimed the job
+}
+
+// FailJobRequest marks a job as permanently failed or schedules a retry.
+message FailJobRequest {
+  string job_id      = 1;
+  string worker_id   = 2;
+  string error_msg   = 3;
+  bool   permanent   = 4;  // if true, go straight to dead letter (no retry)
+  int32  retry_count = 5;  // current retry count from ClaimJobResponse
+}
+
+// Empty response — used when the caller only needs to know if the RPC succeeded.
+message JobAck {
+  string job_id = 1;
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
+
+// JobQueueService is the gRPC interface exposed by the Go server.
+// C++ (and any other language) workers use this to participate in the queue
+// without needing direct database access or knowledge of the schema.
+service JobQueueService {
+  // ClaimJob atomically claims the next available job.
+  // Returns NOT_FOUND if the queue is empty.
+  rpc ClaimJob(ClaimJobRequest) returns (ClaimJobResponse);
+
+  // CompleteJob marks a job as successfully completed.
+  rpc CompleteJob(CompleteJobRequest) returns (JobAck);
+
+  // FailJob marks a job failed. The server decides whether to retry
+  // based on retry_count, max_retries, and the permanent flag.
+  rpc FailJob(FailJobRequest) returns (JobAck);
+}
