@@ -260,6 +260,80 @@ go run scripts/loadtest.go -concurrency=100 -total=2000 -url=http://localhost:80
 
 ---
 
+## Observability
+
+The full observability stack is Prometheus (metrics scraping + storage) + Grafana (dashboards). All config is pre-provisioned — no manual setup needed.
+
+### How it connects
+
+```
+API server (:8080) → exposes /metrics in Prometheus text format
+       ↑
+Prometheus (:9090) → scrapes /metrics every 5s → stores as time series
+       ↑
+Grafana (:3000) → queries Prometheus → renders the dashboard
+```
+
+### Start the stack
+
+```bash
+docker compose -f deployments/observability/docker-compose.yml up -d
+```
+
+### Access the UIs
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Grafana | http://localhost:3000 | admin / admin |
+| Prometheus | http://localhost:9090 | — |
+
+### View the dashboard
+
+1. Open Grafana at http://localhost:3000
+2. Navigate to **Dashboards → Job Queue → Distributed Job Queue**
+3. The dashboard loads automatically — no import needed
+
+The dashboard covers: enqueue rate, completion rate, failure rate, execution latency p50/p95/p99, claim query latency, retry rate, crash recovery events, goroutine count, and lifetime totals.
+
+### Generate live metrics
+
+```bash
+# Start the services
+go run ./cmd/api/
+go run ./cmd/worker/
+
+# Flood jobs and watch the graphs move
+go run scripts/loadtest.go -concurrency=100 -total=2000
+```
+
+### Useful Prometheus queries
+
+```promql
+# Jobs per second (last 5 minutes)
+rate(jobqueue_jobs_completed_total[5m])
+
+# p99 execution latency
+histogram_quantile(0.99, rate(jobqueue_jobs_execution_duration_seconds_bucket[2m]))
+
+# Claim query p95 latency (DB health indicator)
+histogram_quantile(0.95, rate(jobqueue_db_claim_duration_seconds_bucket[2m]))
+
+# Total jobs ever enqueued
+sum(jobqueue_jobs_enqueued_total)
+```
+
+### Stop the stack
+
+```bash
+# Stop containers (preserves metrics data)
+docker compose -f deployments/observability/docker-compose.yml down
+
+# Stop and delete all stored metrics
+docker compose -f deployments/observability/docker-compose.yml down -v
+```
+
+---
+
 ## Production Deployment
 
 ### systemd

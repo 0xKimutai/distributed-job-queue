@@ -1,0 +1,150 @@
+{
+  "title": "Distributed Job Queue",
+  "uid": "jobqueue-main",
+  "schemaVersion": 38,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Jobs Enqueued / sec",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "rate(jobqueue_jobs_enqueued_total[1m])",
+        "legendFormat": "{{task_name}}"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Jobs Completed / sec",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "rate(jobqueue_jobs_completed_total[1m])",
+        "legendFormat": "{{task_name}}"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "green", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Jobs Failed / sec",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "rate(jobqueue_jobs_failed_total[1m])",
+        "legendFormat": "{{task_name}}"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "red", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Job Execution Duration — p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(jobqueue_jobs_execution_duration_seconds_bucket[2m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(jobqueue_jobs_execution_duration_seconds_bucket[2m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(jobqueue_jobs_execution_duration_seconds_bucket[2m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "DB Claim Latency — p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(jobqueue_db_claim_duration_seconds_bucket[2m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(jobqueue_db_claim_duration_seconds_bucket[2m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(jobqueue_db_claim_duration_seconds_bucket[2m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Jobs Retried / sec",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "rate(jobqueue_jobs_retried_total[1m])",
+        "legendFormat": "{{task_name}}"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "orange", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Jobs Recovered (crash recovery)",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "rate(jobqueue_jobs_recovered_total[1m])",
+        "legendFormat": "recovered/sec"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "purple", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Go Goroutines",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "go_goroutines{job=\"jobqueue-api\"}",
+        "legendFormat": "goroutines"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Total Jobs — Lifetime Counters",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 4 },
+      "targets": [
+        { "expr": "sum(jobqueue_jobs_enqueued_total)", "legendFormat": "Enqueued" },
+        { "expr": "sum(jobqueue_jobs_completed_total)", "legendFormat": "Completed" },
+        { "expr": "sum(jobqueue_jobs_failed_total)", "legendFormat": "Failed" },
+        { "expr": "sum(jobqueue_jobs_retried_total)", "legendFormat": "Retried" },
+        { "expr": "jobqueue_jobs_recovered_total", "legendFormat": "Recovered" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 5s      # scrape every 5s — fine for dev, 15s is normal for prod
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Scrape the API server's /metrics endpoint.
+  # The API server exposes metrics for: enqueued jobs, HTTP request stats,
+  # Go runtime (GC, goroutines, memory), and DB claim latency.
+  - job_name: jobqueue-api
+    static_configs:
+      - targets:
+          - host.docker.internal:8080  # API server running on host machine
+        labels:
+          service: api
+
+  # Scrape the worker process.
+  # Workers expose: completed, failed, retried, recovered job counters
+  # and execution duration histograms.
+  # Workers need their own /metrics port — add this in Phase 13 if needed.
+  # For now all metrics come through the API server since it's the scrape target.
+
+  # Prometheus scrapes itself — useful for monitoring the monitoring system.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
