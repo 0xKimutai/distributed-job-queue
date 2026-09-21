@@ -315,7 +315,6 @@ The C++ worker has zero database code. All queue semantics — atomic claiming, 
 
 ## Documentation
 
-- [`docs/learning-journal.md`](docs/learning-journal.md) — running record of concepts learned, design decisions, weaknesses, and questions to answer at each phase
 - [`docs/test-snapshots.md`](docs/test-snapshots.md) — real output from actual runs: worker logs, crash recovery timelines, load test numbers, backend benchmark results
 
 ---
