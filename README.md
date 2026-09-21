@@ -199,6 +199,28 @@ Defined in `proto/jobqueue.proto`:
 | `CompleteJob` | `CompleteJobRequest` | `JobAck` | Marks job completed |
 | `FailJob` | `FailJobRequest` | `JobAck` | Marks job failed or schedules retry |
 
+### Regenerating gRPC Stubs
+
+After editing `proto/jobqueue.proto` (adding fields, RPCs, or messages), regenerate the Go and C++ stubs:
+
+```bash
+bash scripts/gen_proto.sh
+```
+
+This runs `protoc` and overwrites the generated files in `internal/grpc/pb/` and `cpp-worker/proto/`. Never edit those files by hand — they'll be overwritten on the next generation.
+
+**Prerequisites:**
+```bash
+# protoc compiler
+sudo apt install protobuf-compiler protobuf-compiler-grpc
+
+# Go plugins
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+```
+
+**Important when adding fields:** field numbers are permanent. Never reuse or renumber an existing field — old clients will misinterpret the data. Deprecate old fields and assign new numbers to new fields.
+
 ---
 
 ## Job Lifecycle
@@ -288,3 +310,28 @@ Without jitter, all workers failing on the same external service at T+0 retry si
 The C++ worker has zero database code. All queue semantics — atomic claiming, lease management, retry logic, backoff calculation — stay in Go. C++ calls `ClaimJob()` and gets a job. If queue internals change, only Go changes. Protobuf field-number stability means old and new workers interoperate safely during rolling deployments.
 
 ---
+
+---
+
+## Documentation
+
+- [`docs/learning-journal.md`](docs/learning-journal.md) — running record of concepts learned, design decisions, weaknesses, and questions to answer at each phase
+- [`docs/test-snapshots.md`](docs/test-snapshots.md) — real output from actual runs: worker logs, crash recovery timelines, load test numbers, backend benchmark results
+
+---
+
+## Roadmap
+
+- [x] Phase 0 — Problem definition, schema, architecture
+- [x] Phase 1 — Repository, migrations, API server
+- [x] Phase 2 — First worker: poll loop, claim, execute
+- [x] Phase 3 — Concurrent workers, `FOR UPDATE SKIP LOCKED`
+- [x] Phase 4 — Retries, exponential backoff with jitter, dead letter
+- [x] Phase 5 — Leases, heartbeats, stale job recovery
+- [x] Phase 6 — Graceful shutdown, two-context pattern
+- [x] Phase 7 — Priority aging, starvation prevention
+- [x] Phase 8 — Observability: Prometheus metrics, health probes, pprof
+- [x] Phase 9 — Connection pooling, load testing, resource exhaustion
+- [x] Phase 10 — systemd unit files, Docker multi-stage builds
+- [x] Phase 11 — C++ workers via gRPC and Protocol Buffers
+- [x] Phase 12 — Redis backend, strategy pattern, benchmark comparison

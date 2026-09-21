@@ -2,17 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
-	"syscall"
-	"fmt"
 	"sync"
+	"syscall"
 
 	"github.com/distributed-job-queue/config"
 	"github.com/distributed-job-queue/internal/db"
 	"github.com/distributed-job-queue/internal/queue"
 	"github.com/distributed-job-queue/internal/worker"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -34,10 +35,22 @@ func main() {
 	}
 	defer pool.Close()
 
-	q := queue.New(pool)
+	// Select queue backend from config — same logic as cmd/api/main.go.
+	var q queue.Queue
+	switch cfg.QueueBackend {
+	case "redis":
+		opt, err := goredis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			slog.Error("invalid REDIS_URL", "error", err)
+			os.Exit(1)
+		}
+		q = queue.NewRedisQueue(goredis.NewClient(opt))
+		slog.Info("using Redis queue backend", "url", cfg.RedisURL)
+	default:
+		q = queue.New(pool)
+		slog.Info("using Postgres queue backend")
+	}
 
-	// Graceful shutdown on SIGINT/SIGTERM.
-	// Cancelling ctx causes worker.Run() to exit cleanly after its current job.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -48,8 +61,6 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// One dedicated recovery sweep goroutine — resets orphaned jobs whose
-	// lease expired (i.e. the worker that claimed them crashed or stalled).
 	sweeper := worker.New(fmt.Sprintf("%s-sweeper", cfg.WorkerID), q, cfg)
 	wg.Add(1)
 	go func() {
@@ -57,7 +68,6 @@ func main() {
 		sweeper.RunRecoverySweep(ctx)
 	}()
 
-	// N poll-loop worker goroutines — each independently claims and executes jobs.
 	for i := 0; i < cfg.WorkerConcurrency; i++ {
 		workerID := fmt.Sprintf("%s-%d", cfg.WorkerID, i)
 		w := worker.New(workerID, q, cfg)
@@ -68,8 +78,6 @@ func main() {
 		}(w)
 	}
 	wg.Wait()
-	wg.Wait()
-
 
 	slog.Info("worker stopped cleanly")
 }

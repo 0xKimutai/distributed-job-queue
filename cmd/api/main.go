@@ -17,6 +17,7 @@ import (
 	pb "github.com/distributed-job-queue/internal/grpc/pb"
 	grpcserver "github.com/distributed-job-queue/internal/grpc/server"
 	"github.com/distributed-job-queue/internal/queue"
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )
 
@@ -43,7 +44,22 @@ func main() {
 	}
 	defer pool.Close()
 
-	q := queue.New(pool)
+	// Select queue backend based on QUEUE_BACKEND env var.
+	// Both implement queue.Queue — everything downstream is backend-agnostic.
+	var q queue.Queue
+	switch cfg.QueueBackend {
+	case "redis":
+		opt, err := goredis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			slog.Error("invalid REDIS_URL", "error", err)
+			os.Exit(1)
+		}
+		q = queue.NewRedisQueue(goredis.NewClient(opt))
+		slog.Info("using Redis queue backend", "url", cfg.RedisURL)
+	default:
+		q = queue.New(pool)
+		slog.Info("using Postgres queue backend")
+	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	router := api.NewRouter(pool, cfg)

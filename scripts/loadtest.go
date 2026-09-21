@@ -23,7 +23,10 @@ func main() {
 	concurrency := flag.Int("concurrency", 50, "number of concurrent workers")
 	total := flag.Int("total", 500, "total number of requests")
 	url := flag.String("url", "http://localhost:8080", "base URL")
+	backend := flag.String("backend", "postgres", "queue backend label (for display only)")
 	flag.Parse()
+
+	fmt.Printf("Backend: %s | Concurrency: %d | Total: %d\n", *backend, *concurrency, *total)
 
 	var (
 		success   atomic.Int64

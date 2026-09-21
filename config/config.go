@@ -15,6 +15,8 @@ import (
 type Config struct {
 	// Database
 	DatabaseURL string
+	RedisURL    string // Redis connection URL (redis://localhost:6379)
+	QueueBackend string // "postgres" or "redis"
 
 	// API server
 	APIPort  string
@@ -42,6 +44,8 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 	cfg := &Config{
 		DatabaseURL:             requireEnv("DATABASE_URL"),
+		RedisURL:                getEnvOrDefault("REDIS_URL", "redis://localhost:6379"),
+		QueueBackend:            getEnvOrDefault("QUEUE_BACKEND", "postgres"),
 		APIPort:                 getEnvOrDefault("API_PORT", "8080"),
 		GRPCPort:                getEnvOrDefault("GRPC_PORT", "50051"),
 		WorkerID:                getEnvOrDefault("WORKER_ID", generateWorkerID()),

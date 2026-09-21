@@ -13,7 +13,7 @@ import (
 
 type handler struct {
 	pool  *pgxpool.Pool
-	queue *queue.Queue
+	queue queue.Queue
 	cfg   *config.Config
 }
 

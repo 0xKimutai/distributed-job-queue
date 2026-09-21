@@ -20,11 +20,11 @@ import (
 // one job at a time, so we can understand the basic lifecycle clearly.
 type Worker struct {
 	id    string
-	queue *queue.Queue
+	queue queue.Queue
 	cfg   *config.Config
 }
 
-func New(id string, q *queue.Queue, cfg *config.Config) *Worker {
+func New(id string, q queue.Queue, cfg *config.Config) *Worker {
 	return &Worker{id: id, queue: q, cfg: cfg}
 }
 

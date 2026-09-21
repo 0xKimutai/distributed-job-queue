@@ -26,10 +26,10 @@ type JobQueueServer struct {
 	// Embed the unimplemented server to satisfy the interface for any
 	// methods we haven't implemented yet — protoc-gen-go-grpc requires this.
 	pb.UnimplementedJobQueueServiceServer
-	queue *queue.Queue
+	queue queue.Queue
 }
 
-func New(q *queue.Queue) *JobQueueServer {
+func New(q queue.Queue) *JobQueueServer {
 	return &JobQueueServer{queue: q}
 }
 

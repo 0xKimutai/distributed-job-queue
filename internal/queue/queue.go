@@ -12,20 +12,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Queue wraps the database pool and exposes job queue operations.
-// Both the API (enqueue) and workers (claim, complete, fail) use this.
-// Keeping SQL here rather than in handlers/workers means one place to audit.
-type Queue struct {
+// PostgresQueue implements Queue using PostgreSQL as the backing store.
+// Uses FOR UPDATE SKIP LOCKED for atomic job claiming.
+type PostgresQueue struct {
 	pool *pgxpool.Pool
 }
 
-func New(pool *pgxpool.Pool) *Queue {
-	return &Queue{pool: pool}
+func New(pool *pgxpool.Pool) Queue {
+	return &PostgresQueue{pool: pool}
 }
 
 // Enqueue inserts a new job and returns its ID.
 // Called by the API handler.
-func (q *Queue) Enqueue(ctx context.Context, taskName, queueName string, payload []byte, priority int) (string, error) {
+func (q *PostgresQueue) Enqueue(ctx context.Context, taskName, queueName string, payload []byte, priority int) (string, error) {
 	const sql = `
 		INSERT INTO jobs (task_name, queue_name, payload, priority)
 		VALUES ($1, $2, $3, $4)
@@ -46,7 +45,7 @@ func (q *Queue) Enqueue(ctx context.Context, taskName, queueName string, payload
 //
 // The leaseDuration controls how long the worker has before another worker
 // may reclaim the job if no heartbeat is received.
-func (q *Queue) Claim(ctx context.Context, workerID string, leaseDuration time.Duration) (*models.Job, error) {
+func (q *PostgresQueue) Claim(ctx context.Context, workerID string, leaseDuration time.Duration) (*models.Job, error) {
 	start := time.Now()
 	const sql = `
 		UPDATE jobs
@@ -88,7 +87,7 @@ func (q *Queue) Claim(ctx context.Context, workerID string, leaseDuration time.D
 }
 
 // Complete marks a job as successfully finished.
-func (q *Queue) Complete(ctx context.Context, jobID string) error {
+func (q *PostgresQueue) Complete(ctx context.Context, jobID string) error {
 	const sql = `
 		UPDATE jobs
 		SET status = 'completed', lease_expires_at = NULL, worker_id = NULL
@@ -108,7 +107,7 @@ func (q *Queue) Complete(ctx context.Context, jobID string) error {
 // The job becomes invisible to workers until run_at passes — this is how
 // exponential backoff is enforced without any scheduler or timer process.
 // The existing claim query already filters on run_at <= now().
-func (q *Queue) Retry(ctx context.Context, jobID string, jobErr error, delay time.Duration) error {
+func (q *PostgresQueue) Retry(ctx context.Context, jobID string, jobErr error, delay time.Duration) error {
 	const sql = `
 		UPDATE jobs
 		SET
@@ -129,7 +128,7 @@ func (q *Queue) Retry(ctx context.Context, jobID string, jobErr error, delay tim
 }
 // Fail marks a job as permanently failed and records the error message.
 // Called when max_retries is exceeded or the error is permanent.
-func (q *Queue) Fail(ctx context.Context, jobID string, jobErr error) error {
+func (q *PostgresQueue) Fail(ctx context.Context, jobID string, jobErr error) error {
 	const sql = `
 		UPDATE jobs
 		SET
@@ -150,7 +149,7 @@ func (q *Queue) Fail(ctx context.Context, jobID string, jobErr error) error {
 // RenewLease extends the lease expiry for a running job.
 // Only succeeds if the job is still owned by this worker and still running —
 // prevents a race where two workers both try to renew the same job.
-func (q *Queue) RenewLease(ctx context.Context, jobID string, workerID string, leaseDuration time.Duration) error {
+func (q *PostgresQueue) RenewLease(ctx context.Context, jobID string, workerID string, leaseDuration time.Duration) error {
 	const sql = `
 		UPDATE jobs
 		SET lease_expires_at = now() + $3::interval
@@ -168,7 +167,7 @@ func (q *Queue) RenewLease(ctx context.Context, jobID string, workerID string, l
 // RecoverStaleJobs resets all running jobs whose lease has expired back to pending.
 // Returns the number of jobs recovered so the caller can log it.
 // This is called periodically by a background goroutine inside the worker process.
-func (q *Queue) RecoverStaleJobs(ctx context.Context) (int64, error) {
+func (q *PostgresQueue) RecoverStaleJobs(ctx context.Context) (int64, error) {
 	const sql = `
 		UPDATE jobs
 		SET
